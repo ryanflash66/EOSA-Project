@@ -1,109 +1,222 @@
-# Duke Scraper Toolkit
+# Enfield Outage & Load Forecasting Research Toolkit
 
-## Overview
+Integrated research codebase for the City of Enfield power resiliency project. The toolkit has two pillars:
 
-The Duke Scraper Toolkit combines an automated outage collection service with
-energy resilience analysis notebooks used by the City of Enfield power project.
-The `Data Scraping/outage-collector` package discovers Duke Energy outage feeds with
-Playwright, schedules recurring polls, normalizes events, and exposes an
-operations FastAPI surface while persisting CSV/GeoJSON exports. The
-`Data Scraping/power-usage` folder contains sensitivity studies and an
-optimization demo for distributed solar + storage microgrids that underpin
-planning discussions around critical load support.
+- **Automated outage intelligence** – a Playwright-driven service that discovers and polls Duke Energy outage feeds, filters events to a study region, and exposes exports plus an operational FastAPI surface.
+- **Demand forecasting & microgrid analysis** – reproducible scripts and notebooks for short‑horizon load prediction, PV+storage dispatch studies, and sensitivity analysis that support planning and design.
 
-## Repository structure
+The audience is graduate‑level researchers and collaborators who need to reproduce experiments, extend the code, or plug the outputs into downstream analytics.
 
-| Path | Description |
-| ---- | ----------- |
-| `Data Scraping/outage-collector/` | Python package that handles discovery, polling, filtering, and export of Duke outage events together with a FastAPI operations plane. |
-| `Data Scraping/power-usage/` | Analysis scripts for PV/battery sensitivity sweeps and an NREL PVWatts-backed dispatch optimizer to explore microgrid performance. |
-| `Prediction Models/` | Notebooks, training scripts, and evaluation artifacts for the Enfield load forecasting models. |
-| `requirements.txt` | Consolidated dependency pin set used during local development and CI for both components (Python 3.11+). |
+---
 
-## Getting started
+## Research Problem & Motivation
+- Provide **near real‑time situational awareness** of Duke Energy outages for Enfield and neighboring jurisdictions to inform emergency response and infrastructure planning.
+- Produce **data‑driven load forecasts** and **microgrid what‑if analyses** to size distributed PV + storage that can sustain critical services during grid disturbances.
+- Deliver a **reproducible, inspectable codebase** so that results can be audited, re‑run with new data, or adapted to adjacent territories.
 
-1. **Create a virtual environment** targeting Python 3.11 or newer as required by
-   the outage collector package.
-2. **Install dependencies** from the pinned requirements file and download the
-   Playwright browsers once per machine:
-   ```powershell
+### Approach & Key Contributions
+- **Automated endpoint discovery:** Playwright observes the live outage map, captures authenticated request templates (headers, params, jurisdiction token), and caches them for replay.
+- **Robust polling pipeline:** httpx + APScheduler drive recurring requests; spatial filters (bbox/radius/viewport) prune events; detail enrichment merges per‑event metadata; structured JSON logs support traceability.
+- **Normalized exports + API:** Events are canonicalised to CSV/GeoJSON and served through a FastAPI “ops plane” for dashboards or alerts.
+- **Forecasting feature stack:** Enhanced calendar/lag/rolling features for 15‑minute and hourly horizons, with Gradient Boosting, HistGradientBoosting, Ridge, SARIMAX baselines, and reproducible train/test splits.
+- **Microgrid feasibility tools:** Deterministic greedy heuristic and CVXPY optimisation demonstrate how PV/battery sizing affects unmet load for critical facilities; optional NREL PVWatts data integration.
+
+---
+
+## Methodology
+
+### Outage Collector Service (`Data Scraping/outage-collector`)
+1. **Configuration resolution** (`collector/config.py`): CLI → `.env` → presets precedence; presets define jurisdiction, bbox, radius, viewport polygon, and optional extra query parameters. Defaults target Raleigh (DEC) but any preset in `presets/places.yml` can be used.
+2. **Endpoint discovery** (`collector/discovery.py`): Playwright visits Duke outage map entry points, scores candidate XHR/fetch requests, sanitises headers, and saves a `DiscoveryTemplate` cache (overrideable with `--discovery-override-url`).
+3. **Polling loop** (`collector/poller.py`): httpx replays the template, enforces jurisdiction param, retries/refreshes discovery on 401/shape errors if enabled, caps events per cycle, and records raw payloads.
+4. **Spatial filtering** (`collector/filters.py`): stage‑A bbox policy (centroid/vertex/intersects), optional viewport polygon clamp, and radius pruning relative to preset centre; bbox padding supported.
+5. **Normalization & enrichment** (`collector/normalizer.py`, `collector/enrichment.py`): harmonises IDs/coordinates/causes/timestamps into `NormalizedEvent` objects; optional detail fetch per event merges crew status, ETR, and refined polygons.
+6. **Exports & ops plane** (`collector/storage.py`, `collector/service.py`, `collector/scheduler.py`): CSV/GeoJSON writers; FastAPI endpoints for `/healthz`, `/stats`, `/events/latest`, `/config`; APScheduler launches poll job immediately and at `poll_interval_s`.
+7. **Logging & observability** (`collector/logging_utils.py`): JSON‑structured logs with redacted config snapshots for auditability.
+
+Assumptions: Duke’s public outage map remains reachable; jurisdiction tokens stay stable; Playwright can launch Chromium in headless mode on the host. If the map HTML or API schema changes, discovery heuristics may need retuning.
+
+### Load Forecasting & Microgrid Analysis (`Prediction Models`, `Data Scraping/power-usage`)
+- **Data**: Cleaned 15‑minute whole‑site energy series (`model_training/content/data/15_minute_timeseries_data_cleaned_ready.csv`) with pre‑split train/test CSVs at both 15‑minute and hourly resolution. Large Excel source also available.
+- **Feature engineering** (`model_training/feature_engineering.py`): calendar features; extensive target lags; rolling stats; optional lagged sub‑meter aggregates; granularity‑aware window sizes.
+- **Enhanced training pipeline** (`model_training/run_enhanced_training.py`): trains Gradient Boosting, HistGradientBoosting, Ridge; persists models and predictions under `content/data/models` and `content/data/analysis_outputs`; evaluates MAE/RMSE/MAPE/R2/Bias.
+- **Exploratory script** (`Enfieild_outage.py`): end‑to‑end cleaning, aggregation, model training (including naive baseline), error breakdowns by period, and plot generation to `Prediction Models/plots`.
+- **Time‑series baselines** (`model_training/sarimax.py`): grid search over SARIMAX orders with state‑budget guardrails.
+- **Microgrid heuristics** (`power-usage/Power_usage_summary.py`): greedy dispatch across PV/battery/load sweeps with deterministic seeds; writes sensitivity table.
+- **Convex dispatch demo** (`power-usage/nrel_api_demo.py`): CVXPY optimisation minimizing unmet load over 48h; optional PVWatts fetch via `NREL_API_KEY`; saves `microgrid_results.csv` and plots.
+
+---
+
+## Repository Layout
+
+| Path | Purpose |
+| --- | --- |
+| `Data Scraping/outage-collector/collector/` | Outage service source (discovery, poller, filters, enrichment, exports, FastAPI). |
+| `Data Scraping/outage-collector/presets/places.yml` | Place definitions (jurisdiction, bbox, polygon, radius, optional query params). |
+| `Data Scraping/outage-collector/run_collector.ps1` | Helper launcher wrapping `python -m collector` with common flags. |
+| `Data Scraping/power-usage/` | Microgrid sensitivity (`Power_usage_summary.py`) and CVXPY/NREL dispatch demo (`nrel_api_demo.py`). |
+| `Prediction Models/model_training/` | Feature engineering, enhanced training pipeline, SARIMAX utility, cleaned datasets, and train/test splits. |
+| `Prediction Models/plots/` | Saved evaluation figures from `Enfieild_outage.py`. |
+| `Prediction Models/Enfieild_outage.py` | Monolithic exploratory training/evaluation script generating plots and metrics. |
+| `requirements.txt` | Unified dependency pins (Python 3.11+). |
+
+---
+
+## Installation & Environment
+1. **Create a Python 3.11+ virtual environment**:
+   ```bash
+   python -m venv .venv
+   # Windows
+   .\.venv\Scripts\activate
+   # macOS/Linux
+   source .venv/bin/activate
+   ```
+2. **Install dependencies** (covers outage collector, forecasting, and CVXPY demos):
+   ```bash
    pip install -r requirements.txt
+   ```
+3. **Install Playwright browsers** (needed only for the outage collector discovery step):
+   ```bash
    python -m playwright install
    ```
-3. **Enter the outage collector directory** when you want to run or develop the
-   service. From the repo root:
-   ```powershell
-   Set-Location ".\Data Scraping\outage-collector"
+4. **Dev tools (optional)**: inside `Data Scraping/outage-collector`, install extras for formatting, linting, and tests:
+   ```bash
+   pip install .[dev]
    ```
-   Use the helper PowerShell script (or invoke the module with `python -m collector` —
-   the module name is `collector` even though the project folder is `outage-collector`)
-   to launch it.
-4. **Run the FastAPI operations plane** and polling loop; the helper script
-   defaults to the Raleigh preset, writes exports to `data/`, and serves on port 8000.
+5. **System prerequisites**: Playwright headless Chromium requires system libraries on Linux; CVXPY will default to open-source solvers (OSQP, Clarabel) included in requirements.
 
-> **Tip:** Playwright needs system dependencies for headless Chromium/Firefox on
-> Linux. Consult the [Playwright installation docs](https://playwright.dev)
-> if the bootstrap step reports missing libraries.
+---
 
-## Outage collector service
+## Usage
 
-### Configuration model
+### Outage Collector Service
+- **Run with defaults (Raleigh preset, CSV+GeoJSON, port 8000):**
+  ```bash
+  cd "Data Scraping/outage-collector"
+  python -m collector
+  ```
+- (Optional, Windows-only convenience) `run_collector.ps1` wraps the same command with defaults.
+- **Custom run (example: Charlotte, geojson only, 60 s polling, tighter viewport):**
+  ```bash
+  python -m collector \
+    --place charlotte \
+    --format geojson \
+    --poll-interval-s 60 \
+    --viewport-only \
+    --padding-km 2.0 \
+    --log-level INFO
+  ```
+- **Key CLI/env options** (see `collector/config.py` for full list):
+  - `--place <name>` or `--presets-file <path>` to select a preset.
+  - `--format {csv,geojson,both}`; outputs land in `data/` by default.
+  - `--output-dir <path>` to redirect exports.
+  - `--bbox-policy {centroid,vertex,intersects}`, `--radius-km <float>`, `--viewport-only`, `--padding-km <float>` to control spatial filters.
+  - `--poll-interval-s`, `--max-events-per-cycle`, `--rebootstrap-on-401` for resilience.
+  - `--discovery-url` or `--discovery-override-url` to seed/bypass Playwright.
+  - `.env` keys mirror CLI (e.g., `PLACE`, `FORMAT`, `POLL_INTERVAL_S`, `JURISDICTION`, `QUERY_PARAMS` via presets).
+- **API surface (FastAPI, served on port 8000):**
+  - `/healthz` – readiness plus last poll summary.
+  - `/stats` – latest poll stats and export paths.
+  - `/events/latest?limit=100` – recent normalized events.
+  - `/config` – redacted runtime config and discovery template.
+- **Exports & state**: CSV (`outage_events.csv`) and GeoJSON (`outage_events.geojson`) are written under the configured output directory; the service retains the most recent events, stats, and errors in memory for the API.
 
-Runtime configuration blends CLI flags, `.env` overrides, and place presets. The
-collector ships sensible defaults for polling interval, export format, bounding
-boxes, logging levels, and discovery cache locations, while allowing overrides
-for jurisdiction, radius padding, viewport filtering, and manual discovery
-endpoints. Presets live in `presets/places.yml`; copy the Raleigh entry and
-adjust geometry plus optional `query_params` for new territories before
-launching with `--place <name>`.
+### Microgrid & Load Analysis
+- **Greedy sensitivity sweep**:
+  ```bash
+  python "Data Scraping/power-usage/Power_usage_summary.py"
+  ```
+  Writes `sensitivity_table.csv` and prints PV/battery/load %served table (deterministic RNG seed).
 
-### Discovery and polling pipeline
+- **Convex dispatch with optional NREL PVWatts**:
+  ```bash
+  # Optional: set an API key for real PV traces
+  # Windows (cmd):    set NREL_API_KEY=<your_api_key>
+  # macOS/Linux (sh): export NREL_API_KEY=<your_api_key>
+  python "Data Scraping/power-usage/nrel_api_demo.py"
+  ```
+  Produces `microgrid_results.csv` plus plots; falls back to a synthetic PV curve if no API key.
 
-During startup the service resolves configuration, attaches runtime state, and
-initialises a recurring APScheduler job that polls the outage feed at the
-requested interval. Playwright-driven discovery captures authenticated request
-templates for Duke's outage APIs, caching headers, query parameters, and
-jurisdiction tokens for use by the poller. Each poll performs robust HTTP
-requests, merges preset query parameters, gracefully retries on authentication
-failures by re-running discovery, and filters events using bounding boxes,
-optional radius limits, and viewport polygons before handing them to downstream
-normalization. Normalized events are enriched, exported as CSV/GeoJSON, and
-recorded in the service state for API consumers and observability.
+### Load Forecasting Pipelines
+- **Enhanced, reproducible training (uses pre-split CSVs in `model_training/content/data`)**:
+  ```bash
+  cd "Prediction Models/model_training"
+  python run_enhanced_training.py
+  ```
+  Outputs:
+  - Trained models: `content/data/models/{hourly,15min}/*.joblib`
+  - Predictions: `content/data/analysis_outputs/preds_{hourly,15min}/*.csv`
+  - Metrics JSON: `content/data/analysis_outputs/enhanced_metrics.json`
 
-### Operations API
+- **Exploratory end-to-end script** (plots + metrics):
+  ```bash
+  python "Prediction Models/Enfieild_outage.py"
+  ```
+  Regenerates figures in `Prediction Models/plots` and prints MAE/RMSE/MAPE/sMAPE/CVRMSE/NMBE/R2 for 15-minute and hourly horizons.
 
-The FastAPI app exposes health, stats, latest events, and configuration snapshots
-backed by the in-memory `ServiceState`. These endpoints provide structured data
-for dashboards or alerting while surfacing the most recent exports and poll
-errors when present. Start the service and visit `http://localhost:8000/docs` to
-explore the OpenAPI UI.
+- **SARIMAX baseline** (choose seasonal grids):
+  ```bash
+  python "Prediction Models/model_training/sarimax.py" --train content/data/train_15min.csv --test content/data/test_15min.csv --seasonal-period 96
+  ```
+  Saves `pred_SARIMAX.csv` alongside the test file.
 
-## Power usage analyses
+---
 
-The `Data Scraping/power-usage` scripts offer quick-turn exploration of microgrid
-scenarios:
+## Experiments & Reproducibility
+- **Determinism**: Random seeds fixed where applicable (e.g., scikit‑learn models `random_state=42`; sensitivity sweep RNG seed=1). CVXPY solves are deterministic given the solver.
+- **Data splits**: Use the provided `train_15min.csv`, `test_15min.csv`, `train_hourly.csv`, `test_hourly.csv` to mirror published results. The enhanced pipeline reads these splits automatically.
+- **Reproducing outage exports**: Ensure Playwright browsers are installed, run the collector with the same preset/filters, and retain the emitted CSV/GeoJSON plus the structured logs for audit.
+- **Metrics regeneration**: Rerun `run_enhanced_training.py`; metrics are stored in `analysis_outputs/enhanced_metrics.json`. Plots from `Enfieild_outage.py` are recreated under `Prediction Models/plots`.
 
-- `Power_usage_summary.py` builds deterministic PV and stochastic load profiles,
-  runs a greedy dispatch heuristic across PV, battery, and critical load sweeps,
-  and writes a CSV summary for comparison.
-- `nrel_api_demo.py` optionally downloads PV generation from the NREL PVWatts
-  API, formulates a convex optimization in CVXPY to minimise unmet load, and can
-  fall back to synthetic PV/load profiles for exploratory analysis.
+---
 
-Install the shared requirements, execute the scripts with Python, and inspect
-the generated CSV outputs or plots to assess microgrid performance assumptions.
-Set the `NREL_API_KEY` environment variable when you want live PVWatts data.
+## Datasets
+- **Cleaned 15‑minute series**: `Prediction Models/model_training/content/data/15_minute_timeseries_data_cleaned_ready.csv` (and Excel analogue) – whole‑site energy plus sub‑meters.
+- **Train/test splits**: `train_15min.csv`, `test_15min.csv`, `train_hourly.csv`, `test_hourly.csv` derived from the cleaned series (timestamps as index).
+- **Generated artifacts**: `hourly_from_15min.csv` and `hourly_from_15min_electricity.csv` are aggregated versions; model predictions and metrics are produced under `content/data/analysis_outputs`.
+- **Outage exports**: Written to `Data Scraping/outage-collector/data/` (or the configured `--output-dir`).
+- **Licensing/PII**: Source data may contain operational details; share externally only with project approval. No public redistribution license is asserted in this repo.
 
-## Testing and quality checks
+---
 
-Run the outage collector test suite with `pytest` from inside the
-`Data Scraping/outage-collector` directory once your virtual environment is active:
+## Results Artifacts
+- **Plots**: All evaluation figures live in `Prediction Models/plots` (actual vs predicted, MAE/RMSE by period, heatmaps, rolling MAE, residuals).
+- **Microgrid**: `microgrid_results.csv` summarises dispatch, SoC, curtailment, and unmet load for the CVXPY scenario.
+- **Outage collector**: Latest poll stats and export paths are available via `/stats`; normalized events via `/events/latest`.
 
-```powershell
-Set-Location ".\Data Scraping\outage-collector"
-pytest
+---
+
+## Testing & Quality
+- Outage collector: `pytest` from `Data Scraping/outage-collector` (tests cover config resolution, discovery heuristics, spatial filters, polling, storage, API).
+  ```bash
+  cd "Data Scraping/outage-collector"
+  pytest
+  ```
+- Formatting/linting (optional dev extras): `ruff check .` and `black .` within the outage collector package.
+
+---
+
+## Notes & Limitations
+- Discovery relies on Duke’s public outage map structure; significant front‑end/API changes may require updating request heuristics or presets.
+- Playwright requires a GUI-capable environment for non‑headless runs; headless mode is default (`COLLECTOR_PLAYWRIGHT_HEADLESS=1`).
+- Outage events are filtered using coarse geometry; false negatives/positives are possible at jurisdiction boundaries.
+- Forecasting models assume stationarity in feature relationships; domain drift or meter reconfiguration will degrade performance and require retraining.
+- Microgrid simulations use simplified device constraints and do not model inverter/thermal limits or tariff economics.
+
+---
+
+## Citation
+If you use this toolkit in academic work, please cite it. Replace the fields as appropriate:
+
+```bibtex
+@misc{enfield_outage_toolkit_2025,
+  title   = {Enfield Outage and Load Forecasting Research Toolkit},
+  author  = {City of Enfield Power Project Team},
+  year    = {2025},
+  note    = {Version 0.1.0. Available at the project repository},
+}
 ```
 
-The project also includes a development extras group with formatting and linting
-tools (Black, Ruff, pytest) that can be installed via `pip install .[dev]` inside
-the outage collector directory.
+---
+
+For questions or collaboration, open an issue or contact the project maintainers through the Enfield Power Project team.
